@@ -1,0 +1,4 @@
+# Instala el plugin, FAIR EVA 4.0.0 y las dependencias de prueba declaradas
+# en pyproject.toml. FAIR EVA 4.0.0 requiere una instalación no editable para
+# integrar correctamente el namespace fair_eva.plugin.
+.[test]
