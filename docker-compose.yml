@@ -1,0 +1,36 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    environment:
+      ZENODO_ACCESS_TOKEN: ${ZENODO_ACCESS_TOKEN:-}
+    ports:
+      - "${FIDELIS_API_PORT:-9090}:9090"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      FAIR_EVA_API_URL: http://api
+      FAIR_EVA_API_PORT: "9090"
+      FAIR_EVA_API_EVAL_PATH: /v1.0/rda/rda_all
+      FAIR_EVA_API_PLUGINS_PATH: /v1.0/endpoints
+      FAIR_EVA_PLUGINS_FILE: /app/config/plugins.json
+      FAIR_EVA_REPORTS_DIR: /app/reports
+      FAIR_EVA_TITLE: FIDELIS FAIR Evaluator
+      FAIR_EVA_LOGO_URL: https://eden-fidelis.eu/
+    ports:
+      - "${FIDELIS_WEB_PORT:-8000}:8000"
+    volumes:
+      - ./config/plugins.json:/app/config/plugins.json:ro
+      - fidelis_reports:/app/reports
+    restart: unless-stopped
+
+volumes:
+  fidelis_reports:
