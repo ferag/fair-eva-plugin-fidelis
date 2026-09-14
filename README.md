@@ -6,15 +6,43 @@ FIDELIS is a Zenodo-specific distribution of [FAIR EVA 4.0.0](https://github.com
 - the `fidelis` plugin, which reads structured metadata and files from the Zenodo REST API;
 - the FAIR EVA web client, preconfigured and branded as **FIDELIS FAIR Evaluator**.
 
+## Prerequisites
+
+For the recommended route, the only host dependency is **Docker with Compose v2**. Application dependencies are installed inside the images during the first build; running `pip install` on the host is not required.
+
+- Windows/macOS: install and start [Docker Desktop](https://docs.docker.com/desktop/).
+- Linux: install [Docker Engine](https://docs.docker.com/engine/install/) and the [Compose plugin](https://docs.docker.com/compose/install/linux/).
+
+Check the installation without starting any container:
+
+```bash
+python fidelis.py check
+```
+
+If Docker is missing, the command reports what must be installed. Docker is a system application and therefore cannot be installed through a Python `requirements.txt` file.
+
 ## Run it
 
-Requirements: Docker with the Compose plugin.
+The cross-platform launcher checks Docker and Compose before building and starting both services:
+
+```bash
+python fidelis.py
+```
+
+Then open <http://localhost:8000>. To run in the background or stop the stack:
+
+```bash
+python fidelis.py --detach
+python fidelis.py down
+```
+
+The equivalent direct Compose command is:
 
 ```bash
 docker compose up --build
 ```
 
-Open <http://localhost:8000>, paste a Zenodo DOI, record URL, or numeric record ID, and run the evaluation. Examples:
+Paste a Zenodo DOI, record URL, or numeric record ID, and run the evaluation. Examples:
 
 - `10.5281/zenodo.10897`
 - `https://zenodo.org/records/10897`
@@ -52,12 +80,17 @@ Supported environment variables:
 
 ## Development
 
-Install the package in an isolated environment and run the tests:
+Docker is not needed to develop or test the Python plugin itself. Install it in an isolated environment; `requirements-dev.txt` delegates to `pyproject.toml`, which remains the single source of dependency versions:
 
 ```bash
-python -m pip install -e '.[test]'
-pytest
+python -m venv .venv
+# Linux/macOS: source .venv/bin/activate
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+python -m pip install -r requirements-dev.txt
+python -m pytest
 ```
+
+Re-run the installation command after changing plugin source code. FAIR EVA 4.0.0 is a regular Python package, so an editable install cannot safely merge the external `fair_eva.plugin.fidelis` namespace into it.
 
 The package uses the `fair_eva.plugin.fidelis` namespace expected by FAIR EVA 4.0.0. A complete API smoke test can be run after starting Compose:
 
