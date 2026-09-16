@@ -66,6 +66,20 @@ Zenodo's JSON is converted to the four-column dataframe required by FAIR EVA 4.0
 
 The plugin overrides repository-sensitive indicators instead of relying on OAI-PMH-oriented assumptions in the generic evaluator. In particular, it distinguishes metadata accessibility from file accessibility and does not treat restricted data as automatically open.
 
+### pyCANON privacy demonstrator
+
+FAIR EVA normally evaluates FAIRness from metadata and repository behaviour. FIDELIS additionally includes a deliberately narrow demonstrator showing that a plugin can inspect dataset content and run a domain-specific assessment.
+
+The `data_privacy_01` test applies only to the [UCI Adult dataset on Zenodo](https://doi.org/10.5281/zenodo.7214275). It downloads `adult.csv` from the machine-actionable URL in the Zenodo API response and uses [pyCANON](https://github.com/IFCA-Advanced-Computing/pycanon) with:
+
+- quasi-identifiers: `age`, `education`, `occupation`, `relationship`, `sex`, `native-country`;
+- sensitive attribute: `salary-class`;
+- metrics: k-anonymity, l-diversity, entropy l-diversity, t-closeness and delta-disclosure privacy.
+
+The deposited CSV has no header row. FIDELIS therefore applies the documented 15-column UCI Adult schema by position: `age`, `workclass`, `fnlwgt`, `education`, `education-num`, `marital-status`, `occupation`, `relationship`, `race`, `sex`, `capital-gain`, `capital-loss`, `hours-per-week`, `native-country`, `salary-class`. It does not infer or guess alternative columns.
+
+This is a plugin-specific data test, not an RDA FAIR Data Maturity Model indicator, and it does not contribute to the four FAIR principle scores. A score of 100 means only that the configured privacy assessment was successfully performed. The reported values describe privacy/risk-related characteristics for the predefined attributes; they are not proof or legal certification of anonymisation or GDPR compliance. Other Zenodo records are reported as not applicable.
+
 ## Configuration
 
 The default endpoint and mappings live in `fair_eva/plugin/fidelis/config.ini`. The interface is intentionally restricted to `FIDELIS (Zenodo)` through `config/plugins.json`.

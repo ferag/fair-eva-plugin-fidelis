@@ -9,7 +9,9 @@ the structured JSON response and the file manifest directly.
 from __future__ import annotations
 
 from configparser import ConfigParser
+from io import BytesIO
 import logging
+import math
 import mimetypes
 import os
 import re
@@ -18,6 +20,7 @@ from urllib.parse import quote, urlparse
 
 import pandas as pd
 import requests
+from pycanon import anonymity
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -30,6 +33,40 @@ ZENODO_SCHEMA = "https://zenodo.org/schemas/records/record-v1.0.0.json"
 DOI_RE = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
 ZENODO_DOI_RE = re.compile(r"10\.5281/zenodo\.(\d+)", re.IGNORECASE)
 ZENODO_URL_RE = re.compile(r"(?:records?|record|api/records)/(\d+)", re.IGNORECASE)
+
+PYCANON_DEMO_RECORD_ID = "7214275"
+PYCANON_DEMO_DOI = "10.5281/zenodo.7214275"
+PYCANON_DEMO_FILENAME = "adult.csv"
+PYCANON_DEMO_MAX_BYTES = 10 * 1024 * 1024
+
+# Zenodo 7214275 contains the original headerless UCI Adult CSV.  These names
+# are therefore an explicit ordinal mapping, not inferred from arbitrary data.
+ADULT_COLUMN_MAPPING = {
+    0: "age",
+    1: "workclass",
+    2: "fnlwgt",
+    3: "education",
+    4: "education-num",
+    5: "marital-status",
+    6: "occupation",
+    7: "relationship",
+    8: "race",
+    9: "sex",
+    10: "capital-gain",
+    11: "capital-loss",
+    12: "hours-per-week",
+    13: "native-country",
+    14: "salary-class",
+}
+ADULT_QUASI_IDENTIFIERS = [
+    "age",
+    "education",
+    "occupation",
+    "relationship",
+    "sex",
+    "native-country",
+]
+ADULT_SENSITIVE_ATTRIBUTES = ["salary-class"]
 
 
 def _message(message: str, points: float) -> list[dict[str, Any]]:
@@ -58,6 +95,9 @@ class Plugin(EvaluatorBase):
     ) -> None:
         if config is None:
             config = ConfigParser()
+        fidelis_api_config = os.getenv("FIDELIS_API_CONFIG", "").strip()
+        if fidelis_api_config:
+            config.set("Generic", "api_config", fidelis_api_config)
         super().__init__(item_id, api_endpoint, lang, config, name)
 
         self.session = session or requests.Session()
@@ -302,6 +342,112 @@ class Plugin(EvaluatorBase):
         standard = sum(1 for ext in self.file_list["extension"] if ext.lower() in configured)
         return round(100 * standard / len(self.files), 2)
 
+    def _is_pycanon_demo_dataset(self) -> bool:
+        """Return whether this is the one record configured for the demo."""
+        doi = str(self.record.get("doi") or (self.record.get("metadata") or {}).get("doi") or "")
+        return self.record_id == PYCANON_DEMO_RECORD_ID and doi.lower() == PYCANON_DEMO_DOI
+
+    def _get_file_entry(self, filename: str) -> dict[str, Any] | None:
+        """Find an exact filename in the Zenodo manifest."""
+        return next(
+            (
+                entry
+                for entry in self.files
+                if (entry.get("key") or entry.get("filename") or "") == filename
+            ),
+            None,
+        )
+
+    def _download_csv(self, file_entry: dict[str, Any]) -> pd.DataFrame:
+        """Download and parse the fixed, headerless Adult demonstrator CSV."""
+        filename = file_entry.get("key") or file_entry.get("filename") or ""
+        if filename != PYCANON_DEMO_FILENAME:
+            raise ValueError(f"Expected {PYCANON_DEMO_FILENAME!r}, received {filename!r}")
+
+        declared_size = file_entry.get("size")
+        if declared_size is not None and int(declared_size) > PYCANON_DEMO_MAX_BYTES:
+            raise ValueError("The declared Adult CSV exceeds the 10 MiB demonstrator limit")
+
+        links = file_entry.get("links") or {}
+        download_url = links.get("content") or links.get("self")
+        if not download_url:
+            raise ValueError("adult.csv has no machine-actionable download URL")
+
+        parsed_url = urlparse(download_url)
+        endpoint_host = urlparse(self.api_endpoint).hostname
+        if (
+            parsed_url.scheme != "https"
+            or parsed_url.hostname != endpoint_host
+            or not parsed_url.path.endswith(f"/{PYCANON_DEMO_FILENAME}/content")
+        ):
+            raise ValueError("adult.csv download URL is not an expected Zenodo content URL")
+
+        response = self.session.get(download_url, timeout=(10, 60))
+        response.raise_for_status()
+        content = response.content
+        if len(content) > PYCANON_DEMO_MAX_BYTES:
+            raise ValueError("The downloaded Adult CSV exceeds the 10 MiB demonstrator limit")
+
+        data = pd.read_csv(
+            BytesIO(content),
+            header=None,
+            skipinitialspace=True,
+            keep_default_na=False,
+        )
+        expected_columns = list(ADULT_COLUMN_MAPPING.values())
+        if data.empty:
+            raise ValueError("adult.csv is empty")
+        if data.shape[1] != len(expected_columns):
+            raise ValueError(
+                f"adult.csv has {data.shape[1]} columns; expected {len(expected_columns)}"
+            )
+
+        # The immutable Zenodo file is headerless.  Supporting a matching
+        # header as well makes the parser explicit without guessing aliases.
+        first_row = [str(value).strip() for value in data.iloc[0].tolist()]
+        if first_row == expected_columns:
+            data = data.iloc[1:].reset_index(drop=True)
+        data.columns = expected_columns
+        return data
+
+    @staticmethod
+    def _run_pycanon_assessment(data: pd.DataFrame) -> dict[str, int | float]:
+        """Calculate pyCANON metrics for the fixed Adult configuration."""
+        required = ADULT_QUASI_IDENTIFIERS + ADULT_SENSITIVE_ATTRIBUTES
+        missing = [column for column in required if column not in data.columns]
+        if missing:
+            raise ValueError(f"adult.csv is missing expected columns: {', '.join(missing)}")
+
+        return {
+            "k_anonymity": int(anonymity.k_anonymity(data, ADULT_QUASI_IDENTIFIERS)),
+            "l_diversity": int(
+                anonymity.l_diversity(
+                    data, ADULT_QUASI_IDENTIFIERS, ADULT_SENSITIVE_ATTRIBUTES
+                )
+            ),
+            "entropy_l_diversity": float(
+                anonymity.entropy_l_diversity(
+                    data, ADULT_QUASI_IDENTIFIERS, ADULT_SENSITIVE_ATTRIBUTES
+                )
+            ),
+            "t_closeness": float(
+                anonymity.t_closeness(
+                    data, ADULT_QUASI_IDENTIFIERS, ADULT_SENSITIVE_ATTRIBUTES
+                )
+            ),
+            "delta_disclosure": float(
+                anonymity.delta_disclosure(
+                    data, ADULT_QUASI_IDENTIFIERS, ADULT_SENSITIVE_ATTRIBUTES
+                )
+            ),
+        }
+
+    @staticmethod
+    def _format_privacy_metric(value: int | float) -> str:
+        if isinstance(value, float) and not math.isfinite(value):
+            return str(value)
+        return f"{value:.6g}"
+
     # Findable
     def rda_f1_01m(self):
         return self._score(self._has_doi(), "Metadata is persistently identified by a DOI.", "No metadata DOI was found.")
@@ -492,3 +638,51 @@ class Plugin(EvaluatorBase):
             for entry in self.files
         )
         return self._score(complete, "Every exposed file has a size and machine-actionable download URL.", "One or more files lack a size or download URL.")
+
+    def data_privacy_01(self):
+        """Run the dataset-specific pyCANON privacy demonstrator."""
+        if not self._is_pycanon_demo_dataset():
+            message = (
+                "Not applicable: the pyCANON privacy demonstrator is currently configured "
+                "only for the UCI Adult demonstrator dataset (Zenodo 7214275)."
+            )
+            return 0, _message(message, 0)
+
+        file_entry = self._get_file_entry(PYCANON_DEMO_FILENAME)
+        if file_entry is None:
+            return 0, _message(
+                "pyCANON privacy demonstrator could not run: adult.csv is missing from "
+                "the Zenodo file manifest.",
+                0,
+            )
+
+        try:
+            data = self._download_csv(file_entry)
+            metrics = self._run_pycanon_assessment(data)
+        except Exception as error:
+            logger.exception("pyCANON privacy demonstrator failed")
+            return 0, _message(
+                f"pyCANON privacy demonstrator could not be completed: {error}", 0
+            )
+
+        message_lines = (
+            "Privacy/anonymisation demonstrator using pyCANON.",
+            f"Dataset: UCI Adult (Zenodo 7214275); rows assessed: {len(data)}.",
+            f"Quasi-identifiers: {', '.join(ADULT_QUASI_IDENTIFIERS)}.",
+            f"Sensitive attribute: {', '.join(ADULT_SENSITIVE_ATTRIBUTES)}.",
+            f"k-anonymity: k = {self._format_privacy_metric(metrics['k_anonymity'])}.",
+            f"l-diversity: l = {self._format_privacy_metric(metrics['l_diversity'])}.",
+            "Entropy l-diversity: l = "
+            f"{self._format_privacy_metric(metrics['entropy_l_diversity'])}.",
+            f"t-closeness: t = {self._format_privacy_metric(metrics['t_closeness'])}.",
+            "Delta-disclosure privacy: delta = "
+            f"{self._format_privacy_metric(metrics['delta_disclosure'])}.",
+            "Score 100 means that the privacy assessment was successfully performed; "
+            "it does not mean that the dataset is 100% anonymous. These risk-related "
+            "anonymisation metrics apply only to the configured attributes and do not "
+            "certify legal anonymisation or GDPR compliance.",
+        )
+        messages = []
+        for line in message_lines:
+            messages.extend(_message(line, 100))
+        return 100, messages

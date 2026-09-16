@@ -12,6 +12,8 @@ license = "Apache-2.0"
 authors = [{ name = "Fernando Aguilar Gómez" }]
 dependencies = [
   "fair_eva @ git+https://github.com/IFCA-Advanced-Computing/FAIR_eva@4.0.0",
+  "pycanon>=1.3.6,<2",
+  "PyYAML>=6,<7",
   "requests>=2.31,<3",
 ]
 
